@@ -38,4 +38,3 @@ jobs:
           name: FSGolfPL-debug-apk
           path: Android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-}
