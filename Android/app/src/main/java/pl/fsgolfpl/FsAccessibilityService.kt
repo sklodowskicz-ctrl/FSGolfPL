@@ -27,6 +27,7 @@ class FsAccessibilityService : AccessibilityService() {
     private var wm: WindowManager? = null
     private val handler = Handler(Looper.getMainLooper())
     private val overlays = mutableMapOf<String, TextView>()
+    companion object {
     private val dict = linkedMapOf(
         // ===== Ekran główny / nawigacja =====
         "Home" to "Główna",
@@ -243,6 +244,12 @@ class FsAccessibilityService : AccessibilityService() {
         "Cloud" to "Chmura"
     )
 
+    fun translate(raw: String): String? {
+        dict[raw]?.let { return it }
+        return dict.entries.firstOrNull { it.key.equals(raw, ignoreCase = true) }?.value
+    }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -252,9 +259,8 @@ class FsAccessibilityService : AccessibilityService() {
         if (event == null || !Settings.canDrawOverlays(this)) return
 
         // Keep the accessibility service deliberately conservative.
-        // The previous build used AccessibilityService.takeScreenshot() + ML Kit
-        // on every window update; on some Android 11 devices that can terminate
-        // the accessibility service even though the service toggle remains ON.
+        // Screen OCR runs in the dedicated MediaProjection foreground service,
+        // rather than from this event callback, which keeps accessibility stable.
         // This stable build uses only the accessibility tree.
         runCatching {
             val root = rootInActiveWindow ?: return
@@ -297,8 +303,7 @@ class FsAccessibilityService : AccessibilityService() {
     }
 
     private fun exactTranslation(raw: String): String? {
-        dict[raw]?.let { return it }
-        return dict.entries.firstOrNull { it.key.equals(raw, ignoreCase = true) }?.value
+        return translate(raw)
     }
 
     private fun removeStale(found: MutableSet<String>) {
@@ -357,3 +362,4 @@ class FsAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 }
+
