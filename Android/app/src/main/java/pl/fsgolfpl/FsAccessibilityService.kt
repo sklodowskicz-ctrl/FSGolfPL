@@ -1,7 +1,6 @@
 package pl.fsgolfpl
 
 import android.accessibilityservice.AccessibilityService
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -14,10 +13,6 @@ import android.view.WindowManager
 import android.widget.TextView
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 /**
  * FS Golf PL 0.4
@@ -32,10 +27,6 @@ class FsAccessibilityService : AccessibilityService() {
     private var wm: WindowManager? = null
     private val handler = Handler(Looper.getMainLooper())
     private val overlays = mutableMapOf<String, TextView>()
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    private var ocrBusy = false
-    private var lastOcrAt = 0L
-
     private val dict = linkedMapOf(
         // ===== Ekran główny / nawigacja =====
         "Home" to "Główna",
@@ -259,26 +250,21 @@ class FsAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || !Settings.canDrawOverlays(this)) return
-        val root = rootInActiveWindow ?: return
-        val packageName = root.packageName?.toString().orEmpty()
-        if (packageName == applicationContext.packageName) return
 
-        val found = mutableSetOf<String>()
-        walk(root, found)
-        removeStale(found)
+        // Keep the accessibility service deliberately conservative.
+        // The previous build used AccessibilityService.takeScreenshot() + ML Kit
+        // on every window update; on some Android 11 devices that can terminate
+        // the accessibility service even though the service toggle remains ON.
+        // This stable build uses only the accessibility tree.
+        runCatching {
+            val root = rootInActiveWindow ?: return
+            val packageName = root.packageName?.toString().orEmpty()
+            if (packageName == applicationContext.packageName) return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && isLikelyFsGolf(packageName)) {
-            scheduleOcr()
+            val found = mutableSetOf<String>()
+            walk(root, found)
+            removeStale(found)
         }
-    }
-
-    private fun isLikelyFsGolf(packageName: String): Boolean {
-        // FlightScope's package name can vary by app generation. We therefore
-        // use a broad check, while never OCR-ing our own app.
-        return packageName.isNotBlank() &&
-            !packageName.equals("android", true) &&
-            !packageName.contains("launcher", true) &&
-            !packageName.contains("settings", true)
     }
 
     private fun walk(node: AccessibilityNodeInfo, found: MutableSet<String>) {
@@ -321,84 +307,7 @@ class FsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun scheduleOcr() {
-        val now = System.currentTimeMillis()
-        if (ocrBusy || now - lastOcrAt < 650L) return
-        lastOcrAt = now
-        handler.postDelayed({ takeOcrScreenshot() }, 80L)
-    }
-
-    private fun takeOcrScreenshot() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || ocrBusy) return
-        ocrBusy = true
-        takeScreenshot(
-            display?.displayId ?: 0,
-            mainExecutor,
-            object : TakeScreenshotCallback {
-                override fun onSuccess(result: ScreenshotResult) {
-                    val hardwareBuffer = result.hardwareBuffer
-                    val bitmap = runCatching {
-                        Bitmap.wrapHardwareBuffer(hardwareBuffer, result.colorSpace)
-                            ?.copy(Bitmap.Config.ARGB_8888, false)
-                    }.getOrNull()
-                    runCatching { hardwareBuffer.close() }
-                    if (bitmap == null) {
-                        ocrBusy = false
-                        return
-                    }
-                    recognizeBitmap(bitmap)
-                }
-
-                override fun onFailure(errorCode: Int) {
-                    ocrBusy = false
-                }
-            }
-        )
-    }
-
-    private fun recognizeBitmap(bitmap: Bitmap) {
-        val image = InputImage.fromBitmap(bitmap, 0)
-        recognizer.process(image)
-            .addOnSuccessListener { result ->
-                processOcr(result)
-            }
-            .addOnCompleteListener {
-                bitmap.recycle()
-                ocrBusy = false
-            }
-    }
-
-    private fun processOcr(result: Text) {
-        val found = mutableSetOf<String>()
-        for (block in result.textBlocks) {
-            for (line in block.lines) {
-                val raw = line.text.trim()
-                if (raw.isEmpty()) continue
-                val match = findTranslation(raw) ?: continue
-                val box = line.boundingBox ?: continue
-                val pl = match.second
-                val key = "o:$raw@${box.left},${box.top},${box.right},${box.bottom}"
-                found.add(key)
-                addOrUpdateOverlay(key, pl, box, true)
-            }
-        }
-        // Remove only old OCR overlays; accessibility overlays stay untouched.
-        overlays.keys.filter { it.startsWith("o:") && it !in found }.toList().forEach { key ->
-            overlays.remove(key)?.let { runCatching { wm?.removeView(it) } }
-        }
-    }
-
-    private fun findTranslation(raw: String): Pair<String, String>? {
-        val normalized = raw.replace(Regex("\\s+"), " ").trim()
-        dict.entries.sortedByDescending { it.key.length }.forEach { (en, pl) ->
-            if (normalized.equals(en, true)) return en to pl
-            val regex = Regex("(?i)(?<![A-Za-z])${Regex.escape(en)}(?![A-Za-z])")
-            if (regex.containsMatchIn(normalized)) return en to pl
-        }
-        return null
-    }
-
-    private fun addOrUpdateOverlay(key: String, pl: String, bounds: Rect, ocr: Boolean = false) {
+    private fun addOrUpdateOverlay(key: String, pl: String, bounds: Rect) {
         val existing = overlays[key]
         if (existing != null) {
             existing.text = pl
@@ -407,7 +316,7 @@ class FsAccessibilityService : AccessibilityService() {
 
         val tv = TextView(this).apply {
             text = pl
-            textSize = if (ocr) 17f else 16f
+            textSize = 17f
             setTextColor(Color.WHITE)
             setBackgroundColor(0xE6000000.toInt())
             setPadding(10, 6, 10, 6)
@@ -416,8 +325,8 @@ class FsAccessibilityService : AccessibilityService() {
             includeFontPadding = true
         }
 
-        val width = maxOf(bounds.width(), estimateWidth(pl, if (ocr) 17 else 16))
-        val height = maxOf(bounds.height(), if (ocr) 42 else 38)
+        val width = maxOf(bounds.width(), estimateWidth(pl, 17))
+        val height = maxOf(bounds.height(), 42)
         val params = WindowManager.LayoutParams(
             width,
             height,
@@ -445,7 +354,6 @@ class FsAccessibilityService : AccessibilityService() {
         handler.removeCallbacksAndMessages(null)
         overlays.values.forEach { runCatching { wm?.removeView(it) } }
         overlays.clear()
-        recognizer.close()
         super.onDestroy()
     }
 }
