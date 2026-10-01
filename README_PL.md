@@ -1,14 +1,14 @@
-# FS Golf PL 0.6
+# FS Golf PL 0.7
 
 Rozszerzona nakładka języka polskiego dla FS Golf.
 
-Wersja 0.6 obejmuje szeroki słownik całego interfejsu: ekran główny, nawigację, Session Setup, tryby Full Swing/Training/Chipping/Putting, dane uderzenia, ustawienia radaru, widoki trajektorii, profil i Chmurę FS.
+Wersja 0.7 obejmuje szeroki słownik całego interfejsu: ekran główny, nawigację, Session Setup, tryby Full Swing/Training/Chipping/Putting, dane uderzenia, ustawienia radaru, widoki trajektorii, profil i Chmurę FS.
 
 Zastosowane są dwa mechanizmy: AccessibilityService dla zwykłych elementów tekstowych oraz OCR dla tekstu rysowanego wewnątrz kafelków i niestandardowych widoków.
 
 Uwaga: nie można zagwarantować tłumaczenia tekstu dynamicznego, nazw użytkownika, wartości liczbowych ani elementów, których OCR nie rozpozna. Stałe angielskie etykiety interfejsu są objęte słownikiem możliwie szeroko.
 
-## Aktualna wersja 0.6 — MediaProjection i OCR
+## Aktualna wersja 0.7 — słownik i MediaProjection OCR
 
 Dodano osobny przepływ OCR oparty na zgodzie systemowej MediaProjection, usłudze pierwszoplanowej Androida i ML Kit Text Recognition. W aplikacji włącz nakładkę i usługę dostępności, a następnie wybierz „Uruchom tłumaczenie OCR ekranu” i zaakceptuj systemowy komunikat przechwytywania. Zgoda dotyczy sesji przechwytywania; aby zatrzymać OCR, wróć do FS Golf PL i wybierz zatrzymanie.
 
@@ -16,7 +16,9 @@ Usługa dostępności dalej obsługuje tekst z drzewa UI. OCR uzupełnia ją dla
 
 ## Budowanie APK na GitHub
 
-Workflow `.github/workflows/build-apk.yml` uruchamia się po wypchnięciu zmian na `main` albo ręcznie z karty Actions. Na Ubuntu przygotowuje Java 17, Android SDK 35 i Gradle 8.11.1, a następnie buduje APK debug. Gotowy plik `FS-Golf-PL-0.6-debug.apk` można pobrać z artefaktów danego uruchomienia workflow.
+Wersja 0.7 uzupełnia słownik o etykietę „Session Selection” („Wybór sesji”). Pozostałe tłumaczenia z listy są już dostępne, a działanie OCR i radaru pozostaje bez zmian.
+
+Workflow `.github/workflows/build-apk.yml` uruchamia się po wypchnięciu zmian na `main` albo ręcznie z karty Actions. Na Ubuntu przygotowuje Java 17, Android SDK 35 i Gradle 8.11.1, a następnie buduje APK debug. Gotowy plik `FS-Golf-PL-0.7-debug.apk` można pobrać z artefaktów danego uruchomienia workflow.
 
 
 ## Historia wersji 0.5 — stabilizacja usługi Android

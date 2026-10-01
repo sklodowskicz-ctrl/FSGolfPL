@@ -81,6 +81,7 @@ class FsAccessibilityService : AccessibilityService() {
 
         // ===== Session Setup =====
         "Session Setup" to "Ustawienia sesji",
+        "Session Selection" to "Wybór sesji",
         "Select your mode" to "Wybierz tryb",
         "Select Mode" to "Wybierz tryb",
         "Set up your radar" to "Ustaw radar",

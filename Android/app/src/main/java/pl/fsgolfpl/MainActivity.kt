@@ -21,7 +21,7 @@ class MainActivity : Activity() {
             setPadding(32, 48, 32, 32)
         }
         layout.addView(TextView(this).apply {
-            text = "FS Golf PL 0.6\n\nTłumaczy napisy FS Golf na język polski. OCR działa przez przechwytywanie ekranu Androida (MediaProjection).\n\n1. Zezwól na wyświetlanie nad innymi aplikacjami.\n2. Włącz usługę FS Golf PL w Ułatwieniach dostępu.\n3. Naciśnij przycisk przechwytywania i zaakceptuj komunikat Androida.\n4. Otwórz FS Golf."
+            text = "FS Golf PL 0.7\n\nTłumaczy napisy FS Golf na język polski. OCR działa przez przechwytywanie ekranu Androida (MediaProjection).\n\n1. Zezwól na wyświetlanie nad innymi aplikacjami.\n2. Włącz usługę FS Golf PL w Ułatwieniach dostępu.\n3. Naciśnij przycisk przechwytywania i zaakceptuj komunikat Androida.\n4. Otwórz FS Golf."
             textSize = 18f
         })
         layout.addView(Button(this).apply {
