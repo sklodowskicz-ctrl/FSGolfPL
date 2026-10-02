@@ -1,174 +1,49 @@
-name: Build and release FS Golf PL Windows Overlay v4 clean
+name: Copy existing Windows Overlay v4 package to v5
 
 on:
   push:
     branches: [main]
     paths:
-      - 'Windows/**'
       - '.github/workflows/build-release-windows-v4-clean.yml'
 
 permissions:
   contents: write
 
 jobs:
-  build-test-release:
+  copy-package:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: Publish self-contained x64 Release
-        run: dotnet publish Windows/FSGolfPL.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/WindowsOverlay
-      - name: Verify no target means no visible window; clean old bar; detect, track and hide with FS Golf
+      - name: Copy the published v4 ZIP without rebuilding
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-          using System.Text;
-          public static class V4WindowCheck {
-            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-            public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr data);
-            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
-            [DllImport("user32.dll", SetLastError=true)] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-            [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
-            [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
-            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
-          }
-          '@
-          $exe = (Resolve-Path 'dist/WindowsOverlay/FSGolfPL.exe').Path
-          $log = Join-Path $env:LOCALAPPDATA 'FSGolfPL/overlay.log'
-          Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-          $legacy = $null
-          $overlay = $null
-          $target = $null
-          try {
-            $legacy = Start-Process -FilePath $exe -ArgumentList '--legacy-test-window' -PassThru -WindowStyle Normal
-            Start-Sleep -Milliseconds 500
-            $overlay = Start-Process -FilePath $exe -PassThru -WindowStyle Normal
-            Start-Sleep -Seconds 2
-            $legacy.Refresh(); $overlay.Refresh()
-            if (-not $legacy.HasExited) { throw 'A previous visible FS Golf PL overlay process was not closed during startup cleanup.' }
-            if ($overlay.HasExited) { throw 'The v4 overlay process exited unexpectedly.' }
-            if ($overlay.MainWindowHandle -ne [IntPtr]::Zero) { throw 'Overlay showed a window while FS Golf was not running.' }
-            $overlayWindows = [System.Collections.Generic.List[IntPtr]]::new()
-            $enumOverlay = [V4WindowCheck+EnumWindowsProc]{
-              param([IntPtr]$hWnd,[IntPtr]$data)
-              if ([V4WindowCheck]::IsWindowVisible($hWnd)) {
-                $processId = [uint32]0
-                [void][V4WindowCheck]::GetWindowThreadProcessId($hWnd, [ref]$processId)
-                if ($processId -eq $overlay.Id) { [void]$overlayWindows.Add($hWnd) }
-              }
-              return $true
-            }.GetNewClosure()
-            [void][V4WindowCheck]::EnumWindows($enumOverlay,[IntPtr]::Zero)
-            if ($overlayWindows.Count -ne 0) { throw "Overlay created $($overlayWindows.Count) visible windows without FS Golf." }
-
-            $second = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
-            if (-not $second.WaitForExit(5000)) { throw 'A second overlay instance did not exit.' }
-            if ($second.ExitCode -ne 0) { throw "Duplicate instance returned $($second.ExitCode)." }
-            $overlay.Refresh()
-            if ($overlay.HasExited) { throw 'Launching a duplicate stopped the active overlay process.' }
-
-            $target = Start-Process -FilePath $exe -ArgumentList '--test-target' -PassThru -WindowStyle Normal
-            $deadline = (Get-Date).AddSeconds(15)
-            do {
-              $overlay.Refresh()
-              [void][V4WindowCheck]::EnumWindows($enumOverlay,[IntPtr]::Zero)
-              if ($overlayWindows.Count -eq 1) { break }
-              $overlayWindows.Clear()
-              Start-Sleep -Milliseconds 300
-            } while ((Get-Date) -lt $deadline)
-            $overlay.Refresh(); $target.Refresh()
-            if ($target.HasExited -or $overlay.HasExited) { throw 'The test game or overlay exited unexpectedly.' }
-            if ($overlayWindows.Count -ne 1) {
-              $details = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Raw } else { 'No startup exception log.' }
-              throw "Overlay did not show exactly one window when FS Golf started. Visible windows=$($overlayWindows.Count), Process.MainWindowHandle=$($overlay.MainWindowHandle). $details"
-            }
-            $overlayHwnd = $overlayWindows[0]
-            $title = [System.Text.StringBuilder]::new(256)
-            [void][V4WindowCheck]::GetWindowText($overlayHwnd,$title,$title.Capacity)
-            if ($title.ToString() -notmatch 'FS Golf PL') { throw "Unexpected overlay title: $($title.ToString())" }
-            $targetRect = [V4WindowCheck+RECT]::new()
-            $overlayRect = [V4WindowCheck+RECT]::new()
-            if (-not [V4WindowCheck]::GetWindowRect($target.MainWindowHandle,[ref]$targetRect) -or
-                -not [V4WindowCheck]::GetWindowRect($overlayHwnd,[ref]$overlayRect)) { throw 'Could not read target/overlay geometry.' }
-            if ([Math]::Abs(($overlayRect.Left-$targetRect.Left)-18) -gt 4 -or [Math]::Abs(($overlayRect.Top-$targetRect.Top)-18) -gt 4) { throw 'Overlay is not positioned relative to FS Golf.' }
-            if (($overlayRect.Right-$overlayRect.Left) -ge ($targetRect.Right-$targetRect.Left) -or ($overlayRect.Bottom-$overlayRect.Top) -ge ($targetRect.Bottom-$targetRect.Top)) { throw 'Overlay covers the full FS Golf client window.' }
-            $style = [V4WindowCheck]::GetWindowLongPtr($overlayHwnd,-16).ToInt64()
-            if (($style -band 0x00C00000) -eq 0 -or ($style -band 0x00080000) -eq 0) { throw 'Overlay lacks a normal caption/X close control.' }
-            $exStyle = [V4WindowCheck]::GetWindowLongPtr($overlayHwnd,-20).ToInt64()
-            if (($exStyle -band 0x00000008) -ne 0) { throw 'Overlay is in the desktop-wide TopMost band.' }
-            if ([V4WindowCheck]::GetWindow($overlayHwnd,4) -ne $target.MainWindowHandle) { throw 'Overlay is not owned by the detected FS Golf window.' }
-
-            $beforeX=$targetRect.Left; $beforeY=$targetRect.Top
-            if (-not [V4WindowCheck]::SetWindowPos($target.MainWindowHandle,[IntPtr]::Zero,$beforeX+50,$beforeY+35,0,0,0x0001 -bor 0x0002 -bor 0x0010)) { throw 'Could not move fixture window.' }
-            Start-Sleep -Milliseconds 800
-            [void][V4WindowCheck]::GetWindowRect($target.MainWindowHandle,[ref]$targetRect)
-            [void][V4WindowCheck]::GetWindowRect($overlayHwnd,[ref]$overlayRect)
-            if ([Math]::Abs(($overlayRect.Left-$targetRect.Left)-18) -gt 5 -or [Math]::Abs(($overlayRect.Top-$targetRect.Top)-18) -gt 5) { throw 'Overlay failed to follow FS Golf movement.' }
-
-            [void]$target.CloseMainWindow()
-            if (-not $target.WaitForExit(5000)) { Stop-Process -Id $target.Id -Force }
-            Start-Sleep -Milliseconds 800
-            $overlayWindows.Clear()
-            [void][V4WindowCheck]::EnumWindows($enumOverlay,[IntPtr]::Zero)
-            if ($overlayWindows.Count -ne 0) { throw 'Overlay stayed visible after FS Golf closed.' }
-
-            $target = Start-Process -FilePath $exe -ArgumentList '--test-target' -PassThru -WindowStyle Normal
-            $deadline = (Get-Date).AddSeconds(10)
-            do {
-              $overlayWindows.Clear()
-              [void][V4WindowCheck]::EnumWindows($enumOverlay,[IntPtr]::Zero)
-              if ($overlayWindows.Count -eq 1) { break }
-              Start-Sleep -Milliseconds 300
-            } while ((Get-Date) -lt $deadline)
-            if ($overlayWindows.Count -ne 1) { throw 'Overlay did not reappear after FS Golf restarted.' }
-            if (Test-Path -LiteralPath $log) { throw "Unexpected exception log: $(Get-Content -LiteralPath $log -Raw)" }
-            Write-Host 'PASS: old bar process closed, no initial window, one process/window, game detection, owner-bound tracking, hide/reappear cycle.'
-          } finally {
-            foreach ($p in @($overlay,$target,$legacy)) {
-              if ($null -ne $p) { $p.Refresh(); if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
-            }
-          }
-      - name: Verify hidden startup stability
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = (Resolve-Path 'dist/WindowsOverlay/FSGolfPL.exe').Path
-          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -PassThru -WindowStyle Hidden
-          if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id -Force; throw 'Hidden startup did not exit cleanly.' }
-          if ($process.ExitCode -ne 0) { throw "Hidden startup smoke test failed with exit code $($process.ExitCode)." }
-      - name: Package the single final v4 ZIP and inspect it
-        shell: pwsh
-        run: |
-          $zip = 'FSGolfPL-Windows-Overlay-v4.zip'
-          Compress-Archive -Path 'dist/WindowsOverlay/*' -DestinationPath $zip -CompressionLevel Optimal
+          $source = 'https://github.com/sklodowskicz-ctrl/FSGolfPL/releases/download/windows-overlay-v4-clean-20261002/FSGolfPL-Windows-Overlay-v4.zip'
+          $v4 = 'FSGolfPL-Windows-Overlay-v4.zip'
+          $v5 = 'FSGolfPL-Windows-Overlay-v5.zip'
+          Invoke-WebRequest -Uri $source -OutFile $v4
+          Copy-Item -LiteralPath $v4 -Destination $v5
+          $sourceHash = (Get-FileHash -LiteralPath $v4 -Algorithm SHA256).Hash
+          $copyHash = (Get-FileHash -LiteralPath $v5 -Algorithm SHA256).Hash
+          if ($sourceHash -ne $copyHash) { throw 'The v5 copy is not byte-for-byte identical to v4.' }
+          if ($sourceHash -ne 'EBF308DADD8BD301BA23AD504BE4A410D824A489C0357546FB14685B85C6BAF3') { throw "Downloaded v4 ZIP does not match the published asset digest: $sourceHash" }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $v5).Path)
           try {
-            $exeEntry = $archive.Entries | Where-Object { $_.FullName -eq 'FSGolfPL.exe' -and $_.Length -gt 1000000 }
-            if (-not $exeEntry) { throw 'Final ZIP does not contain the fresh self-contained executable.' }
-            Write-Host "Verified final ZIP: $($archive.Entries.Count) entries; FSGolfPL.exe $($exeEntry.Length) bytes."
+            $exe = $archive.Entries | Where-Object { $_.FullName -eq 'FSGolfPL.exe' -and $_.Length -gt 1000000 }
+            if (-not $exe) { throw 'Copied ZIP does not contain FSGolfPL.exe.' }
+            Write-Host "PASS: byte-identical copy; $($archive.Entries.Count) ZIP entries; EXE $($exe.Length) bytes; SHA256 $copyHash."
           } finally { $archive.Dispose() }
-      - name: Publish new permanent v4 Release asset
+      - name: Publish the single v5 ZIP asset
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: windows-overlay-v4-clean-20261002
+          tag_name: windows-overlay-v5-20261002
           target_commitish: main
-          name: FS Golf PL Windows Overlay v4 — clean single-window fix
-          body: Clean v4 Windows x64 package. One instance and one form; no window while FS Golf is absent; closes old v1-v4 processes and binds the one overlay window to the FS Golf owner window.
+          name: FS Golf PL Windows Overlay v5 (identical copy of v4)
+          body: This is the already-published v4 ZIP copied byte-for-byte and renamed for v5. No rebuild or application code changes.
           draft: false
           prerelease: false
           generate_release_notes: false
-          files: FSGolfPL-Windows-Overlay-v4.zip
+          files: FSGolfPL-Windows-Overlay-v5.zip
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
