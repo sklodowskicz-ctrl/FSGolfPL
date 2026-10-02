@@ -27,7 +27,7 @@ jobs:
       - name: Udostępnij aplikację
         uses: actions/upload-artifact@v4
         with:
-          name: FSGolfPL-Windows-Overlay-v1
+          name: FSGolfPL-Windows-Overlay-v1-fixed
           path: dist/WindowsOverlay/
           if-no-files-found: error
           retention-days: 14

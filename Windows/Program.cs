@@ -9,21 +9,72 @@ static class Program
     [STAThread]
     static void Main()
     {
-        ApplicationConfiguration.Initialize();
-        Application.Run(new OverlayForm());
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, eventArgs) =>
+        {
+            RuntimeDiagnostics.Log(eventArgs.Exception);
+            MessageBox.Show(
+                $"FS Golf PL napotkał błąd. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}",
+                "FS Golf PL",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+        {
+            if (eventArgs.ExceptionObject is Exception exception)
+                RuntimeDiagnostics.Log(exception);
+        };
+
+        try
+        {
+            ApplicationConfiguration.Initialize();
+            Application.Run(new OverlayForm());
+        }
+        catch (Exception exception)
+        {
+            RuntimeDiagnostics.Log(exception);
+            MessageBox.Show(
+                $"Nie można uruchomić FS Golf PL. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}\n\n{exception.Message}",
+                "FS Golf PL",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+}
+
+internal static class RuntimeDiagnostics
+{
+    public static string LogFilePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "FSGolfPL",
+        "overlay.log");
+
+    public static void Log(Exception exception)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(LogFilePath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+            File.AppendAllText(LogFilePath,
+                $"[{DateTimeOffset.Now:O}] {exception}\r\n\r\n");
+        }
+        catch
+        {
+            // Diagnostics must never prevent the application from starting.
+        }
     }
 }
 
 /// <summary>
-/// Desktop overlay prototype. The window locator is deliberately isolated from
-/// parameter rendering so a local OCR/value provider can be connected later.
+/// Passive desktop overlay. Window tracking is isolated from value reading so a
+/// local OCR provider can be connected in a later stage.
 /// </summary>
 public sealed class OverlayForm : Form
 {
     private const int OverlayHeight = 112;
     private const int PollIntervalMs = 500;
-    private static readonly IntPtr GwlpHwndParent = new(-8);
-    private static readonly IntPtr HwndTop = IntPtr.Zero;
+    private static readonly IntPtr HwndTopMost = new(-1);
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpShowWindow = 0x0040;
     private const int WsExToolWindow = 0x00000080;
@@ -52,6 +103,7 @@ public sealed class OverlayForm : Form
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = PollIntervalMs };
     private IntPtr _targetHandle;
     private bool _hasTarget;
+    private string? _lastError;
 
     public OverlayForm()
     {
@@ -105,12 +157,34 @@ public sealed class OverlayForm : Form
 
     private void RefreshTarget()
     {
+        try
+        {
+            RefreshTargetCore();
+            _lastError = null;
+        }
+        catch (Exception exception)
+        {
+            var signature = $"{exception.GetType().FullName}: {exception.Message}";
+            if (_lastError != signature)
+            {
+                RuntimeDiagnostics.Log(exception);
+                _lastError = signature;
+            }
+
+            TopMost = false;
+            _status.Text = $"Błąd overlayu: {exception.Message}  •  log: {RuntimeDiagnostics.LogFilePath}";
+            if (!Visible)
+                Show();
+        }
+    }
+
+    private void RefreshTargetCore()
+    {
         var target = FsGolfWindowLocator.FindBestCandidate();
         if (target is null)
         {
             if (_hasTarget)
             {
-                SetOwner(IntPtr.Zero);
                 _targetHandle = IntPtr.Zero;
                 _hasTarget = false;
                 TopMost = false;
@@ -124,13 +198,11 @@ public sealed class OverlayForm : Form
             return;
         }
 
-        if (!_hasTarget || _targetHandle != target.Handle)
-            SetOwner(target.Handle);
         _targetHandle = target.Handle;
         _hasTarget = true;
-
         if (target.IsMinimized)
         {
+            TopMost = false;
             _status.Text = $"Wykryto: {target.Title} — overlay ukryty dla zminimalizowanego okna";
             if (Visible)
                 Hide();
@@ -140,26 +212,20 @@ public sealed class OverlayForm : Form
         if (!Visible)
             Show();
 
-        // The overlay is an owned window: Windows keeps it above the game window
-        // and hides it with the owner. It does not alter or interact with the game.
-        TopMost = false;
         var bounds = target.Bounds;
         if (bounds.Width <= 0 || bounds.Height <= 0)
             return;
 
+        // No cross-process window ownership is used. The overlay is placed in the
+        // topmost band while FS Golf is visible, so it remains above the target.
+        TopMost = true;
         var height = Math.Min(OverlayHeight, bounds.Height);
-        SetWindowPos(Handle, HwndTop, bounds.Left, bounds.Top, bounds.Width, height,
-            SwpNoActivate | SwpShowWindow);
+        if (!SetWindowPos(Handle, HwndTopMost, bounds.Left, bounds.Top, bounds.Width, height,
+                SwpNoActivate | SwpShowWindow))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+
         _status.Text = $"Wykryto: {target.Title} ({target.ProcessName})  •  {bounds.Width} × {bounds.Height}";
     }
-
-    private void SetOwner(IntPtr owner)
-    {
-        SetWindowLongPtrW(Handle, GwlpHwndParent, owner);
-    }
-
-    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowLongPtrW")]
-    private static extern IntPtr SetWindowLongPtrW(IntPtr window, IntPtr index, IntPtr value);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

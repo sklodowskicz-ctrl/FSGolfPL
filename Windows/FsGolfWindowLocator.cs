@@ -75,6 +75,11 @@ public static class FsGolfWindowLocator
         var normalizedTitle = title.Replace(" ", "", StringComparison.Ordinal).ToLowerInvariant();
         var normalizedProcess = processName.Replace("_", "", StringComparison.Ordinal)
             .Replace("-", "", StringComparison.Ordinal).ToLowerInvariant();
+
+        // Do not mistake a second instance of this translator for the target app.
+        if (normalizedProcess == "fsgolfpl" || normalizedTitle.Contains("fsgolfpl", StringComparison.Ordinal))
+            return 0;
+
         var titleMatch = MatchTerms.Any(term => normalizedTitle.Contains(
             term.Replace(" ", "", StringComparison.Ordinal), StringComparison.Ordinal));
         var processMatch = MatchTerms.Any(term => normalizedProcess.Contains(
