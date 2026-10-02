@@ -81,7 +81,7 @@ jobs:
             $deadline = (Get-Date).AddSeconds(15)
             do {
               $overlay.Refresh()
-              [void]$V4WindowCheck::EnumWindows($enumOverlay,[IntPtr]::Zero)
+              [void][V4WindowCheck]::EnumWindows($enumOverlay,[IntPtr]::Zero)
               if ($overlayWindows.Count -eq 1) { break }
               $overlayWindows.Clear()
               Start-Sleep -Milliseconds 300
