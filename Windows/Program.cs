@@ -20,13 +20,8 @@ static class Program
             unhandledException = eventArgs.Exception;
             RuntimeDiagnostics.Log(eventArgs.Exception);
             if (!diagnosticMode)
-            {
-                MessageBox.Show(
-                    $"FS Golf PL napotkał błąd. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}",
-                    "FS Golf PL",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-            }
+                MessageBox.Show($"FS Golf PL napotkał błąd. Szczegóły zapisano w:\n{RuntimeDiagnostics.LogFilePath}",
+                    "FS Golf PL", MessageBoxButtons.OK, MessageBoxIcon.Error);
         };
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
         {
@@ -37,7 +32,6 @@ static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-
             if (testTarget)
             {
                 Application.Run(new TestTargetForm());
@@ -48,14 +42,9 @@ static class Program
             if (smokeTest)
             {
                 var smokeCompleted = false;
-                using var smokeTimer = new System.Windows.Forms.Timer { Interval = 8000 };
-                smokeTimer.Tick += (_, _) =>
-                {
-                    smokeTimer.Stop();
-                    smokeCompleted = true;
-                    form.Close();
-                };
-                form.Shown += (_, _) => smokeTimer.Start();
+                using var timer = new System.Windows.Forms.Timer { Interval = 8000 };
+                timer.Tick += (_, _) => { timer.Stop(); smokeCompleted = true; form.Close(); };
+                form.Shown += (_, _) => timer.Start();
                 Application.Run(form);
                 return smokeCompleted && unhandledException is null && form.LastRefreshError is null ? 0 : 1;
             }
@@ -67,13 +56,8 @@ static class Program
         {
             RuntimeDiagnostics.Log(exception);
             if (!diagnosticMode)
-            {
-                MessageBox.Show(
-                    $"Nie można uruchomić FS Golf PL. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}\n\n{exception.Message}",
-                    "FS Golf PL",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-            }
+                MessageBox.Show($"Nie można uruchomić FS Golf PL. Szczegóły zapisano w:\n{RuntimeDiagnostics.LogFilePath}\n\n{exception.Message}",
+                    "FS Golf PL", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 2;
         }
     }
@@ -81,36 +65,25 @@ static class Program
 
 internal static class RuntimeDiagnostics
 {
-    public static string LogFilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FSGolfPL",
-        "overlay.log");
+    public static string LogFilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "FSGolfPL", "overlay.log");
 
     public static void Log(Exception exception)
     {
         try
         {
             var directory = Path.GetDirectoryName(LogFilePath);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-            File.AppendAllText(LogFilePath,
-                $"[{DateTimeOffset.Now:O}] {exception}\r\n\r\n");
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            File.AppendAllText(LogFilePath, $"[{DateTimeOffset.Now:O}] {exception}\r\n\r\n");
         }
-        catch
-        {
-            // Diagnostics must never prevent the application from starting.
-        }
+        catch { /* Diagnostics must never prevent startup. */ }
     }
 }
 
-/// <summary>
-/// Visible controller window. Its caption is draggable and its standard close
-/// button remains available while a separate readout window passes mouse input
-/// through to FS Golf.
-/// </summary>
+/// <summary>Movable native controller; the separate readout is deliberately click-through.</summary>
 public sealed class OverlayForm : Form
 {
-    private const int PollIntervalMs = 350;
+    private const int PollIntervalMs = 300;
     private static readonly IntPtr HwndTopMost = new(-1);
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpShowWindow = 0x0040;
@@ -120,10 +93,10 @@ public sealed class OverlayForm : Form
         Dock = DockStyle.Fill,
         AutoSize = false,
         ForeColor = Color.White,
-        BackColor = Color.FromArgb(42, 52, 65),
-        Font = new Font("Segoe UI", 9, FontStyle.Regular),
+        BackColor = Color.FromArgb(35, 48, 64),
+        Font = new Font("Segoe UI", 10, FontStyle.Regular),
         TextAlign = ContentAlignment.MiddleLeft,
-        Padding = new Padding(10, 0, 8, 0)
+        Padding = new Padding(14, 4, 12, 4)
     };
     private readonly TranslationOverlayForm _readout = new();
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = PollIntervalMs };
@@ -137,7 +110,7 @@ public sealed class OverlayForm : Form
 
     public OverlayForm()
     {
-        Text = "FS Golf PL Overlay v3";
+        Text = "FS Golf PL — Overlay v4";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         ControlBox = true;
         MinimizeBox = false;
@@ -145,32 +118,25 @@ public sealed class OverlayForm : Form
         ShowIcon = false;
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(42, 52, 65);
+        BackColor = Color.FromArgb(35, 48, 64);
         ForeColor = Color.White;
-        Size = new Size(560, 72);
+        Size = new Size(620, 164);
+        MinimumSize = new Size(500, 110);
         Location = new Point(36, 36);
         Controls.Add(_status);
 
-        _status.Text = "FS Golf PC 2.0 nie jest uruchomiony";
+        _status.Text = "FS Golf PC 2.0 nie jest uruchomiony\r\nUruchom grę, aby wyświetlić tłumaczenia. Przeciągnij to okno za pasek tytułu.";
         Shown += (_, _) => RefreshTarget();
         LocationChanged += (_, _) => HandleManualMove();
         _timer.Tick += (_, _) => RefreshTarget();
-        FormClosed += (_, _) =>
-        {
-            _timer.Dispose();
-            _readout.Dispose();
-        };
+        FormClosed += (_, _) => { _timer.Dispose(); _readout.Dispose(); };
         _timer.Start();
     }
 
     private void HandleManualMove()
     {
-        if (_positioning || _currentTarget is null || _currentTarget.IsMinimized)
-            return;
-
-        _targetOffset = new Point(
-            Left - _currentTarget.Bounds.Left,
-            Top - _currentTarget.Bounds.Top);
+        if (_positioning || _currentTarget is null || _currentTarget.IsMinimized) return;
+        _targetOffset = new Point(Left - _currentTarget.Bounds.Left, Top - _currentTarget.Bounds.Top);
         PositionReadout(_currentTarget);
     }
 
@@ -185,16 +151,11 @@ public sealed class OverlayForm : Form
         {
             _firstRefreshError ??= exception.ToString();
             var signature = $"{exception.GetType().FullName}: {exception.Message}";
-            if (_lastError != signature)
-            {
-                RuntimeDiagnostics.Log(exception);
-                _lastError = signature;
-            }
-
+            if (_lastError != signature) { RuntimeDiagnostics.Log(exception); _lastError = signature; }
             _readout.Hide();
             TopMost = false;
-            Text = "FS Golf PL Overlay v3 — błąd";
-            _status.Text = $"Błąd: {exception.Message}  •  log: {RuntimeDiagnostics.LogFilePath}";
+            Text = "FS Golf PL — błąd";
+            _status.Text = $"Błąd działania overlayu: {exception.Message}\r\nLog: {RuntimeDiagnostics.LogFilePath}";
         }
     }
 
@@ -210,63 +171,54 @@ public sealed class OverlayForm : Form
                 _readout.Hide();
                 TopMost = false;
                 _positioning = true;
+                Size = new Size(620, 164);
                 Location = new Point(36, 36);
-                Size = new Size(560, 72);
                 _positioning = false;
             }
-
-            Text = "FS Golf PL Overlay v3";
-            _status.Text = "FS Golf PC 2.0 nie jest uruchomiony";
+            Text = "FS Golf PL — Overlay v4";
+            _status.Text = "FS Golf PC 2.0 nie jest uruchomiony\r\nUruchom grę, aby wyświetlić tłumaczenia. Przeciągnij to okno za pasek tytułu.";
             return;
         }
 
-        if (_currentTarget?.Handle != target.Handle)
-            _targetOffset = new Point(18, 18);
+        if (_currentTarget?.Handle != target.Handle) _targetOffset = new Point(18, 18);
         _currentTarget = target;
-
         if (target.IsMinimized)
         {
             _readout.Hide();
             TopMost = false;
-            Text = "FS Golf PL Overlay v3";
-            _status.Text = "FS Golf PC 2.0 jest zminimalizowany";
+            Text = "FS Golf PL — Overlay v4";
+            _status.Text = "FS Golf PC 2.0 jest zminimalizowany.";
             return;
         }
 
-        Text = "FS Golf PL Overlay v3 — FS Golf PC 2.0 wykryty";
-        _status.Text = "FS Golf PC 2.0 wykryty  •  Przeciągnij pasek, aby przesunąć  •  × zamyka";
+        Text = "FS Golf PL — Overlay v4 — FS Golf wykryty";
+        _status.Text = "FS GOLF PC 2.0 WYKRYTY\r\nPrzeciągnij pasek tytułu, aby przesunąć panel. Przycisk × zamyka overlay.";
         PositionReadout(target);
     }
 
     private void PositionReadout(FsGolfWindow target)
     {
         var bounds = target.Bounds;
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-            return;
+        if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
         var x = bounds.Left + _targetOffset.X;
         var y = bounds.Top + _targetOffset.Y;
-        var controllerWidth = Math.Clamp(bounds.Width - 24, 440, 620);
+        var controllerWidth = Math.Clamp(bounds.Width - 24, 500, 760);
         _positioning = true;
-        Size = new Size(controllerWidth, 72);
+        Size = new Size(controllerWidth, 92);
         Location = new Point(x, y);
         _positioning = false;
 
         _readout.PrepareForTarget(bounds.Width, bounds.Height);
-        if (!_readout.Visible)
-            _readout.Show();
-
+        if (!_readout.Visible) _readout.Show();
         _readout.TopMost = true;
-        var readoutY = y + Height + 3;
-        if (readoutY + _readout.Height > bounds.Bottom)
-            readoutY = Math.Max(bounds.Top, y - _readout.Height - 3);
 
-        if (!SetWindowPos(_readout.Handle, HwndTopMost, x, readoutY, _readout.Width, _readout.Height,
-                SwpNoActivate | SwpShowWindow))
+        var readoutY = y + Height + 8;
+        if (readoutY + _readout.Height > bounds.Bottom)
+            readoutY = Math.Max(bounds.Top, y - _readout.Height - 8);
+        if (!SetWindowPos(_readout.Handle, HwndTopMost, x, readoutY, _readout.Width, _readout.Height, SwpNoActivate | SwpShowWindow))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
-        // Put the interactive control last in the topmost Z order; only its small
-        // title/status bar receives clicks. The larger readout is click-through.
         TopMost = true;
         if (!SetWindowPos(Handle, HwndTopMost, x, y, Width, Height, SwpNoActivate | SwpShowWindow))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
@@ -274,8 +226,7 @@ public sealed class OverlayForm : Form
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y,
-        int width, int height, uint flags);
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 }
 
 internal sealed class TranslationOverlayForm : Form
@@ -284,6 +235,8 @@ internal sealed class TranslationOverlayForm : Form
     private const int WsExToolWindow = 0x00000080;
     private const int WsExLayered = 0x00080000;
     private const int WsExNoActivate = 0x08000000;
+    private const int CardHeight = 58;
+    private const int CardGap = 8;
 
     private readonly FlowLayoutPanel _flow = new()
     {
@@ -291,42 +244,60 @@ internal sealed class TranslationOverlayForm : Form
         AutoScroll = false,
         WrapContents = true,
         FlowDirection = FlowDirection.LeftToRight,
-        Padding = new Padding(9),
-        BackColor = Color.FromArgb(32, 43, 57)
+        Padding = new Padding(8),
+        BackColor = Color.FromArgb(25, 35, 48)
     };
-    private readonly List<Label> _items = new();
+    private readonly List<Panel> _cards = new();
 
     public TranslationOverlayForm()
     {
-        Text = "FS Golf PL Readouts v3";
+        Text = "FS Golf PL Readouts v4";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(32, 43, 57);
-        ForeColor = Color.White;
-        Opacity = 0.94;
-        ClientSize = new Size(720, 104);
+        BackColor = Color.FromArgb(25, 35, 48);
+        Opacity = 0.97;
+        ClientSize = new Size(720, 160);
         Controls.Add(_flow);
 
         foreach (var parameter in ParameterCatalog.All)
         {
-            var label = new Label
+            var card = new Panel
             {
-                AutoSize = true,
-                Text = $"{parameter.EnglishLabel} → {parameter.PolishLabel}",
-                ForeColor = Color.White,
-                BackColor = Color.FromArgb(58, 72, 91),
-                Font = new Font("Segoe UI", 9, FontStyle.Regular),
-                Padding = new Padding(7, 5, 7, 5),
-                Margin = new Padding(4)
+                Height = CardHeight,
+                Margin = new Padding(CardGap / 2),
+                BackColor = Color.FromArgb(49, 65, 84),
+                Padding = new Padding(9, 5, 7, 4)
             };
-            _items.Add(label);
-            _flow.Controls.Add(label);
+            var english = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 21,
+                Text = parameter.EnglishLabel,
+                AutoEllipsis = false,
+                ForeColor = Color.FromArgb(196, 210, 224),
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            var polish = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = parameter.PolishLabel,
+                AutoEllipsis = false,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            card.Controls.Add(polish);
+            card.Controls.Add(english);
+            _cards.Add(card);
+            _flow.Controls.Add(card);
         }
     }
 
     protected override bool ShowWithoutActivation => true;
-
     protected override CreateParams CreateParams
     {
         get
@@ -339,13 +310,33 @@ internal sealed class TranslationOverlayForm : Form
 
     public void PrepareForTarget(int targetWidth, int targetHeight)
     {
-        Width = Math.Clamp(targetWidth - 24, 460, 1200);
+        var width = Math.Clamp(targetWidth - 24, 460, 1800);
+        var columns = Math.Clamp((width - 16) / 156, 2, 5);
+        var innerWidth = width - 16;
+        var cardWidth = Math.Max(120, (innerWidth - columns * CardGap) / columns);
+        foreach (var card in _cards) card.Width = cardWidth;
+
+        Width = width;
         PerformLayout();
         _flow.PerformLayout();
 
-        var contentBottom = _items.Count == 0 ? 45 : _items.Max(item => item.Bottom);
-        var desiredHeight = Math.Max(68, contentBottom + 10);
-        Height = Math.Min(desiredHeight, Math.Max(72, targetHeight - 96));
+        var rows = (int)Math.Ceiling(_cards.Count / (double)columns);
+        Height = 16 + rows * (CardHeight + CardGap);
+        _flow.PerformLayout();
+    }
+
+    public bool HasValidLayout()
+    {
+        if (_cards.Count != ParameterCatalog.All.Count || _cards.Count == 0) return false;
+        var client = _flow.ClientRectangle;
+        for (var i = 0; i < _cards.Count; i++)
+        {
+            var card = _cards[i];
+            if (card.Width < 120 || card.Height != CardHeight || !client.Contains(card.Bounds)) return false;
+            for (var j = i + 1; j < _cards.Count; j++)
+                if (card.Bounds.IntersectsWith(_cards[j].Bounds)) return false;
+        }
+        return true;
     }
 }
 
@@ -356,7 +347,16 @@ internal sealed class TestTargetForm : Form
         Text = "FS Golf PC 2.0 — Test Window";
         FormBorderStyle = FormBorderStyle.Sizable;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(1000, 700);
+        ClientSize = new Size(1280, 800);
         BackColor = Color.FromArgb(230, 235, 240);
+        var title = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 58,
+            Text = "FS Golf PC 2.0 — okno testowe\r\nPrzykładowe wyniki: Carry 198.4 m  |  Ball Speed 62.1 m/s",
+            Font = new Font("Segoe UI", 16, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        Controls.Add(title);
     }
 }
