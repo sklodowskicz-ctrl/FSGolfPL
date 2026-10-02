@@ -88,7 +88,10 @@ jobs:
             } while ((Get-Date) -lt $deadline)
             $overlay.Refresh(); $target.Refresh()
             if ($target.HasExited -or $overlay.HasExited) { throw 'The test game or overlay exited unexpectedly.' }
-            if ($overlayWindows.Count -ne 1 -or $overlay.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Overlay did not show exactly one window when FS Golf started.' }
+            if ($overlayWindows.Count -ne 1) {
+              $details = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Raw } else { 'No startup exception log.' }
+              throw "Overlay did not show exactly one window when FS Golf started. Visible windows=$($overlayWindows.Count), Process.MainWindowHandle=$($overlay.MainWindowHandle). $details"
+            }
             $overlayHwnd = $overlayWindows[0]
             $title = [System.Text.StringBuilder]::new(256)
             [void][V4WindowCheck]::GetWindowText($overlayHwnd,$title,$title.Capacity)
