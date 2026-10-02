@@ -96,8 +96,10 @@ jobs:
             if (-not [NativeWindowCheck]::SetWindowPos($target.MainWindowHandle, [IntPtr]::Zero, $oldX + 70, $oldY + 45, 0, 0, 0x0001 -bor 0x0002 -bor 0x0010)) { throw 'Unable to move test target.' }
             Start-Sleep -Milliseconds 700
             $controllerRect = [NativeWindowCheck+RECT]::new()
-            if (-not [NativeWindowCheck]::GetWindowRect($overlay.MainWindowHandle, [ref]$controllerRect)) { throw 'Could not read moved controller bounds.' }
-            if ([Math]::Abs(($controllerRect.Left - ($oldX + 70)) - 18) -gt 4 -or [Math]::Abs(($controllerRect.Top - ($oldY + 45)) - 18) -gt 4) { throw 'Controller failed to follow the moved target.' }
+            $targetRect = [NativeWindowCheck+RECT]::new()
+            if (-not [NativeWindowCheck]::GetWindowRect($overlay.MainWindowHandle, [ref]$controllerRect) -or
+                -not [NativeWindowCheck]::GetWindowRect($target.MainWindowHandle, [ref]$targetRect)) { throw 'Could not read moved window bounds.' }
+            if ([Math]::Abs(($controllerRect.Left - $targetRect.Left) - 18) -gt 4 -or [Math]::Abs(($controllerRect.Top - $targetRect.Top) - 18) -gt 4) { throw 'Controller failed to follow the moved target.' }
             if (Test-Path -LiteralPath $log) { throw "Unexpected exception log: $(Get-Content -LiteralPath $log -Raw)" }
             Write-Host 'PASS: active draggable/closable controller, readable-size readout, target tracking, click-through input, no startup exception.'
           } finally {
