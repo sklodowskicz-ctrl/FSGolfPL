@@ -191,7 +191,7 @@ public sealed class OverlayForm : Form
             return;
         }
 
-        Text = "FS Golf PL — Overlay v4 — FS Golf wykryty";
+        Text = "FS Golf PL — Overlay v4 — FS Golf PC 2.0 wykryty";
         _status.Text = "FS GOLF PC 2.0 WYKRYTY\r\nPrzeciągnij pasek tytułu, aby przesunąć panel. Przycisk × zamyka overlay.";
         PositionReadout(target);
     }
@@ -210,6 +210,8 @@ public sealed class OverlayForm : Form
         _positioning = false;
 
         _readout.PrepareForTarget(bounds.Width, bounds.Height);
+        if (!_readout.HasValidLayout())
+            throw new InvalidOperationException("Panel tłumaczeń ma nieprawidłowy układ lub przycięte kafelki.");
         if (!_readout.Visible) _readout.Show();
         _readout.TopMost = true;
 
