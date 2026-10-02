@@ -1,0 +1,33 @@
+name: Build FS Golf PL Windows Overlay
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Windows/**'
+      - '.github/workflows/build-windows-overlay.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-overlay:
+    runs-on: windows-latest
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+      - name: Ustaw .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Zbuduj samodzielny overlay
+        run: dotnet publish Windows/FSGolfPL.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/WindowsOverlay
+      - name: Udostępnij aplikację
+        uses: actions/upload-artifact@v4
+        with:
+          name: FSGolfPL-Windows-Overlay-v1
+          path: dist/WindowsOverlay/
+          if-no-files-found: error
+          retention-days: 14

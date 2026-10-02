@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace FSGolfPL;
@@ -13,37 +14,155 @@ static class Program
     }
 }
 
+/// <summary>
+/// Desktop overlay prototype. The window locator is deliberately isolated from
+/// parameter rendering so a local OCR/value provider can be connected later.
+/// </summary>
 public sealed class OverlayForm : Form
 {
-    readonly Dictionary<string,string> D = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Carry"]="Lot", ["Roll"]="Toczenie", ["Total"]="Dystans całkowity", ["Lateral"]="Odchylenie boczne",
-        ["Club Speed"]="Prędkość kija", ["Ball Speed"]="Prędkość piłki", ["Spin"]="Obroty", ["Spin Axis"]="Oś obrotu",
-        ["Spin Loft"]="Loft dynamiczny", ["Smash"]="Współczynnik uderzenia", ["Launch V"]="Kąt startu pionowy",
-        ["Launch H"]="Kąt startu poziomy", ["AOA"]="Kąt natarcia", ["Height"]="Wysokość", ["Flight Time"]="Czas lotu",
-        ["Shot Type"]="Typ uderzenia", ["Ready"]="Gotowy", ["Connected"]="Połączony", ["Finish Session"]="Zakończ sesję",
-        ["Radar Data"]="Dane radaru", ["Trajectory View"]="Widok trajektorii", ["Settings"]="Ustawienia",
-        ["Full Swing"]="Pełny zamach", ["Putting Session"]="Sesja putting", ["Swing Training"]="Trening zamachu",
-        ["Chipping Session"]="Sesja chipping", ["Review Session"]="Przegląd sesji", ["Play Mode"]="Tryb gry",
-        ["Lateral Impact"]="Uderzenie boczne", ["Vertical Impact"]="Uderzenie pionowe", ["Face Impact"]="Miejsce uderzenia"
-    };
+    private const int OverlayHeight = 112;
+    private const int PollIntervalMs = 500;
+    private static readonly IntPtr GwlpHwndParent = new(-8);
+    private static readonly IntPtr HwndTop = IntPtr.Zero;
+    private const uint SwpNoActivate = 0x0010;
+    private const uint SwpShowWindow = 0x0040;
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExNoActivate = 0x08000000;
 
-    readonly FlowLayoutPanel panel = new() { AutoSize=true, WrapContents=false, FlowDirection=FlowDirection.LeftToRight, BackColor=Color.FromArgb(220,20,20,20), Padding=new Padding(8) };
+    private readonly FlowLayoutPanel _panel = new()
+    {
+        Dock = DockStyle.Fill,
+        AutoScroll = false,
+        WrapContents = true,
+        FlowDirection = FlowDirection.LeftToRight,
+        BackColor = Color.FromArgb(226, 20, 20, 20),
+        Padding = new Padding(8)
+    };
+    private readonly Label _status = new()
+    {
+        AutoSize = false,
+        Dock = DockStyle.Bottom,
+        Height = 20,
+        ForeColor = Color.Gainsboro,
+        BackColor = Color.FromArgb(226, 20, 20, 20),
+        Font = new Font("Segoe UI", 8, FontStyle.Regular),
+        TextAlign = ContentAlignment.MiddleLeft,
+        Padding = new Padding(8, 0, 0, 0)
+    };
+    private readonly System.Windows.Forms.Timer _timer = new() { Interval = PollIntervalMs };
+    private IntPtr _targetHandle;
+    private bool _hasTarget;
+
     public OverlayForm()
     {
-        Text = "FS Golf PL"; FormBorderStyle=FormBorderStyle.None; TopMost=true; ShowInTaskbar=true;
-        BackColor=Color.Magenta; TransparencyKey=Color.Magenta; Opacity=0.92; StartPosition=FormStartPosition.Manual;
-        Width=900; Height=55; Left=30; Top=30;
-        var title = new Label { Text="FS Golf PL", ForeColor=Color.White, AutoSize=true, Font=new Font("Segoe UI",10,FontStyle.Bold), Margin=new Padding(0,7,15,0) };
-        panel.Controls.Add(title);
-        foreach (var kv in D.Take(10)) AddChip(kv.Key,kv.Value);
-        Controls.Add(panel); panel.Dock=DockStyle.Fill;
-        MouseDown += Drag; panel.MouseDown += Drag;
-        var t=new System.Windows.Forms.Timer { Interval=1500 }; t.Tick += (_,_) => { RefreshTarget(); }; t.Start();
+        Text = "FS Golf PL — tłumaczenia";
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = true;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = Color.Magenta;
+        TransparencyKey = Color.Magenta;
+        Opacity = 0.96;
+        MinimumSize = new Size(360, 72);
+        Size = new Size(900, OverlayHeight);
+        Location = new Point(40, 40);
+
+        foreach (var parameter in ParameterCatalog.All)
+            AddParameter(parameter);
+
+        Controls.Add(_panel);
+        Controls.Add(_status);
+        _timer.Tick += (_, _) => RefreshTarget();
+        Shown += (_, _) => RefreshTarget();
+        FormClosed += (_, _) => _timer.Dispose();
+        _timer.Start();
     }
-    void AddChip(string en,string pl){ panel.Controls.Add(new Label{Text=$"{en} → {pl}",ForeColor=Color.White,BackColor=Color.FromArgb(180,35,35,35),AutoSize=true,Padding=new Padding(7,5,7,5),Margin=new Padding(3)}); }
-    void Drag(object? s,MouseEventArgs e){ if(e.Button==MouseButtons.Left){ ReleaseCapture(); SendMessage(Handle,0xA1,2,0); } }
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool ReleaseCapture();
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd,int msg,IntPtr w,IntPtr l);
-    void RefreshTarget(){ /* first prototype: fixed translation bar; OCR/native UI Automation is the next module */ }
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            parameters.ExStyle |= WsExToolWindow | WsExNoActivate;
+            return parameters;
+        }
+    }
+
+    private void AddParameter(ParameterDefinition parameter)
+    {
+        _panel.Controls.Add(new Label
+        {
+            Text = $"{parameter.EnglishLabel} → {parameter.PolishLabel}",
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(190, 42, 42, 42),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9, FontStyle.Regular),
+            Padding = new Padding(7, 5, 7, 5),
+            Margin = new Padding(3)
+        });
+    }
+
+    private void RefreshTarget()
+    {
+        var target = FsGolfWindowLocator.FindBestCandidate();
+        if (target is null)
+        {
+            if (_hasTarget)
+            {
+                SetOwner(IntPtr.Zero);
+                _targetHandle = IntPtr.Zero;
+                _hasTarget = false;
+                TopMost = false;
+                Location = new Point(40, 40);
+                Size = new Size(900, OverlayHeight);
+                if (!Visible)
+                    Show();
+            }
+
+            _status.Text = "Oczekiwanie na widoczne okno FS Golf / FlightScope…";
+            return;
+        }
+
+        if (!_hasTarget || _targetHandle != target.Handle)
+            SetOwner(target.Handle);
+        _targetHandle = target.Handle;
+        _hasTarget = true;
+
+        if (target.IsMinimized)
+        {
+            _status.Text = $"Wykryto: {target.Title} — overlay ukryty dla zminimalizowanego okna";
+            if (Visible)
+                Hide();
+            return;
+        }
+
+        if (!Visible)
+            Show();
+
+        // The overlay is an owned window: Windows keeps it above the game window
+        // and hides it with the owner. It does not alter or interact with the game.
+        TopMost = false;
+        var bounds = target.Bounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+            return;
+
+        var height = Math.Min(OverlayHeight, bounds.Height);
+        SetWindowPos(Handle, HwndTop, bounds.Left, bounds.Top, bounds.Width, height,
+            SwpNoActivate | SwpShowWindow);
+        _status.Text = $"Wykryto: {target.Title} ({target.ProcessName})  •  {bounds.Width} × {bounds.Height}";
+    }
+
+    private void SetOwner(IntPtr owner)
+    {
+        SetWindowLongPtrW(Handle, GwlpHwndParent, owner);
+    }
+
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtrW(IntPtr window, IntPtr index, IntPtr value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y,
+        int width, int height, uint flags);
 }
