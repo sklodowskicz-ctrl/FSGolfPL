@@ -1,0 +1,80 @@
+name: Build and release verified FS Golf PL Windows Overlay
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-release-windows-fixed.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-release:
+    runs-on: windows-latest
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+      - name: Ustaw .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Zbuduj świeży Windows x64 Release
+        run: dotnet publish Windows/FSGolfPL.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/WindowsOverlay
+      - name: Sprawdź, czy EXE pozostaje aktywny
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist/WindowsOverlay/FSGolfPL.exe').Path
+          $log = Join-Path $env:LOCALAPPDATA 'FSGolfPL/overlay.log'
+          Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 12
+            $process.Refresh()
+            if ($process.HasExited) {
+              throw "FSGolfPL.exe exited during startup test with code $($process.ExitCode)"
+            }
+            if (Test-Path -LiteralPath $log) {
+              throw "FSGolfPL.exe logged a startup exception: $(Get-Content -LiteralPath $log -Raw)"
+            }
+            Write-Host "PASS: FSGolfPL.exe remained active for 12 seconds without a startup exception."
+          }
+          finally {
+            $process.Refresh()
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+            }
+          }
+      - name: Sprawdź kontrolowane uruchomienie i zamknięcie
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist/WindowsOverlay/FSGolfPL.exe').Path
+          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) {
+            throw "FSGolfPL smoke test failed with exit code $($process.ExitCode)"
+          }
+      - name: Spakuj świeże pliki Release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path 'dist/WindowsOverlay/*' -DestinationPath 'FSGolfPL-Windows-Overlay-v1-fixed-20261002-2.zip' -CompressionLevel Optimal
+          if (-not (Test-Path -LiteralPath 'FSGolfPL-Windows-Overlay-v1-fixed-20261002-2.zip')) {
+            throw 'Release ZIP was not created'
+          }
+      - name: Opublikuj nowy GitHub Release i ZIP asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-overlay-v1-fixed-20261002-2
+          target_commitish: main
+          name: FS Golf PL Windows Overlay v1 fixed 2026-10-02-2
+          body: Fresh Windows x64 Release build. The packaged executable passed the active-process startup check in GitHub Actions.
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: FSGolfPL-Windows-Overlay-v1-fixed-20261002-2.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
