@@ -1,0 +1,46 @@
+name: Publish verified Windows overlay release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-windows-release.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-release:
+    runs-on: windows-latest
+    steps:
+      - name: Pobierz istniejący, zweryfikowany artefakt
+        uses: actions/download-artifact@v4
+        with:
+          name: FSGolfPL-Windows-Overlay-v1-verified
+          repository: sklodowskicz-ctrl/FSGolfPL
+          run-id: '37015641403'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: release-input
+      - name: Utwórz ZIP z gotowych plików
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path release-input -Filter 'FSGolfPL.exe' -Recurse -File | Select-Object -First 1
+          if ($null -eq $exe) {
+            throw 'The existing verified workflow artifact does not contain FSGolfPL.exe'
+          }
+          Compress-Archive -Path (Join-Path $exe.DirectoryName '*') -DestinationPath 'FSGolfPL-Windows-Overlay-v1-verified.zip' -CompressionLevel Optimal
+      - name: Opublikuj Release z gotowym ZIP-em
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-overlay-v1-verified-20261002
+          name: FS Golf PL Windows Overlay v1 (verified)
+          body: ZIP contains the existing Windows overlay binary from the successful verified Actions build.
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: FSGolfPL-Windows-Overlay-v1-verified.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
