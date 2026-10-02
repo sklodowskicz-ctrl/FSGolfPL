@@ -7,17 +7,24 @@ namespace FSGolfPL;
 static class Program
 {
     [STAThread]
-    static void Main()
+    static int Main(string[] args)
     {
+        var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
+        Exception? unhandledException = null;
+
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, eventArgs) =>
         {
+            unhandledException = eventArgs.Exception;
             RuntimeDiagnostics.Log(eventArgs.Exception);
-            MessageBox.Show(
-                $"FS Golf PL napotkał błąd. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}",
-                "FS Golf PL",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            if (!smokeTest)
+            {
+                MessageBox.Show(
+                    $"FS Golf PL napotkał błąd. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}",
+                    "FS Golf PL",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         };
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
         {
@@ -28,16 +35,38 @@ static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new OverlayForm());
+            var form = new OverlayForm();
+
+            if (smokeTest)
+            {
+                var smokeCompleted = false;
+                using var smokeTimer = new System.Windows.Forms.Timer { Interval = 8000 };
+                smokeTimer.Tick += (_, _) =>
+                {
+                    smokeTimer.Stop();
+                    smokeCompleted = true;
+                    form.Close();
+                };
+                form.Shown += (_, _) => smokeTimer.Start();
+                Application.Run(form);
+                return smokeCompleted && unhandledException is null && form.LastRefreshError is null ? 0 : 1;
+            }
+
+            Application.Run(form);
+            return 0;
         }
         catch (Exception exception)
         {
             RuntimeDiagnostics.Log(exception);
-            MessageBox.Show(
-                $"Nie można uruchomić FS Golf PL. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}\n\n{exception.Message}",
-                "FS Golf PL",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            if (!smokeTest)
+            {
+                MessageBox.Show(
+                    $"Nie można uruchomić FS Golf PL. Szczegóły zapisano w pliku:\n{RuntimeDiagnostics.LogFilePath}\n\n{exception.Message}",
+                    "FS Golf PL",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            return 2;
         }
     }
 }
@@ -105,6 +134,8 @@ public sealed class OverlayForm : Form
     private bool _hasTarget;
     private string? _lastError;
 
+    public string? LastRefreshError { get; private set; }
+
     public OverlayForm()
     {
         Text = "FS Golf PL — tłumaczenia";
@@ -161,9 +192,11 @@ public sealed class OverlayForm : Form
         {
             RefreshTargetCore();
             _lastError = null;
+            LastRefreshError = null;
         }
         catch (Exception exception)
         {
+            LastRefreshError = exception.ToString();
             var signature = $"{exception.GetType().FullName}: {exception.Message}";
             if (_lastError != signature)
             {
@@ -216,7 +249,7 @@ public sealed class OverlayForm : Form
         if (bounds.Width <= 0 || bounds.Height <= 0)
             return;
 
-        // No cross-process window ownership is used. The overlay is placed in the
+        // No cross-process window ownership is used. The overlay is put in the
         // topmost band while FS Golf is visible, so it remains above the target.
         TopMost = true;
         var height = Math.Min(OverlayHeight, bounds.Height);
