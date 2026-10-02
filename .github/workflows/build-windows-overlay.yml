@@ -27,7 +27,7 @@ jobs:
       - name: Test startu aplikacji
         shell: pwsh
         run: |
-          & ".\dist\WindowsOverlay\FSGolfPL.exe" --smoke-test
+          $process = Start-Process -FilePath ".\dist\WindowsOverlay\FSGolfPL.exe" -ArgumentList '--smoke-test' -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) {
             throw "Overlay smoke test failed with exit code $($process.ExitCode)"
           }
