@@ -28,8 +28,8 @@ jobs:
         shell: pwsh
         run: |
           & ".\dist\WindowsOverlay\FSGolfPL.exe" --smoke-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "Overlay smoke test failed with exit code $LASTEXITCODE"
+          if ($process.ExitCode -ne 0) {
+            throw "Overlay smoke test failed with exit code $($process.ExitCode)"
           }
       - name: Zbierz log diagnostyczny
         if: always()

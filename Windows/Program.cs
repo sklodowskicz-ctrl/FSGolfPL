@@ -133,8 +133,9 @@ public sealed class OverlayForm : Form
     private IntPtr _targetHandle;
     private bool _hasTarget;
     private string? _lastError;
+    private string? _firstRefreshError;
 
-    public string? LastRefreshError { get; private set; }
+    public string? LastRefreshError => _firstRefreshError;
 
     public OverlayForm()
     {
@@ -192,11 +193,10 @@ public sealed class OverlayForm : Form
         {
             RefreshTargetCore();
             _lastError = null;
-            LastRefreshError = null;
         }
         catch (Exception exception)
         {
-            LastRefreshError = exception.ToString();
+            _firstRefreshError ??= exception.ToString();
             var signature = $"{exception.GetType().FullName}: {exception.Message}";
             if (_lastError != signature)
             {
