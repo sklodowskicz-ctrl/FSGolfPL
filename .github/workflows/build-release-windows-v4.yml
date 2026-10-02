@@ -1,141 +1,14 @@
-name: Build, test and release FS Golf PL Windows Overlay v4
+name: Archived v4 workflow (superseded by clean single-window workflow)
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/build-release-windows-v4.yml'
-      - 'Windows/**'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-test-release:
+  superseded:
+    if: false
     runs-on: windows-latest
     steps:
-      - name: Pobierz repozytorium
-        uses: actions/checkout@v4
-      - name: Ustaw .NET 8 SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: Zbuduj Windows x64 Release
-        run: dotnet publish Windows/FSGolfPL.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist/WindowsOverlay
-      - name: Testuj okno, układ i pozycjonowanie
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-          using System.Text;
-          public static class NativeWindowCheck {
-            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-            [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
-            public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
-            [DllImport("user32.dll", SetLastError=true)] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-            [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
-            [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
-            [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-          }
-          '@
-          $log = Join-Path $env:LOCALAPPDATA 'FSGolfPL/overlay.log'
-          Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-          $exe = (Resolve-Path 'dist/WindowsOverlay/FSGolfPL.exe').Path
-          $target = Start-Process -FilePath $exe -ArgumentList '--test-target' -PassThru -WindowStyle Normal
-          $overlay = $null
-          try {
-            Start-Sleep -Seconds 2
-            $overlay = Start-Process -FilePath $exe -PassThru -WindowStyle Normal
-            $deadline = (Get-Date).AddSeconds(15)
-            $readoutHandles = [System.Collections.Generic.List[System.IntPtr]]::new()
-            $callback = [NativeWindowCheck+EnumWindowsProc]{
-              param([System.IntPtr]$hWnd, [System.IntPtr]$lParam)
-              $buffer = [System.Text.StringBuilder]::new(256)
-              [void][NativeWindowCheck]::GetWindowText($hWnd, $buffer, $buffer.Capacity)
-              if ($buffer.ToString() -eq 'FS Golf PL Readouts v4') { [void]$readoutHandles.Add($hWnd) }
-              return $true
-            }.GetNewClosure()
-            do {
-              $target.Refresh(); $overlay.Refresh()
-              [void][NativeWindowCheck]::EnumWindows($callback, [System.IntPtr]::Zero)
-              if ($target.MainWindowHandle -ne [IntPtr]::Zero -and $overlay.MainWindowHandle -ne [IntPtr]::Zero -and $readoutHandles.Count -gt 0) { break }
-              Start-Sleep -Milliseconds 300
-            } while ((Get-Date) -lt $deadline)
-            if ($target.HasExited -or $overlay.HasExited) { throw 'Test target or overlay exited unexpectedly.' }
-            if ($target.MainWindowHandle -eq [IntPtr]::Zero -or $overlay.MainWindowHandle -eq [IntPtr]::Zero -or $readoutHandles.Count -eq 0) { throw 'Target, controller or readout window was not created.' }
-
-            $caption = [System.Text.StringBuilder]::new(512)
-            [void][NativeWindowCheck]::GetWindowText($overlay.MainWindowHandle, $caption, $caption.Capacity)
-            if ($caption.ToString() -notmatch 'FS Golf PC 2.0 wykryty') { throw "Target detection failed: $($caption.ToString())" }
-            $targetRect = [NativeWindowCheck+RECT]::new()
-            $controllerRect = [NativeWindowCheck+RECT]::new()
-            $readoutRect = [NativeWindowCheck+RECT]::new()
-            if (-not [NativeWindowCheck]::GetWindowRect($target.MainWindowHandle, [ref]$targetRect) -or
-                -not [NativeWindowCheck]::GetWindowRect($overlay.MainWindowHandle, [ref]$controllerRect) -or
-                -not [NativeWindowCheck]::GetWindowRect($readoutHandles[0], [ref]$readoutRect)) { throw 'Could not read window geometry.' }
-            if ([Math]::Abs(($controllerRect.Left - $targetRect.Left) - 18) -gt 3 -or [Math]::Abs(($controllerRect.Top - $targetRect.Top) - 18) -gt 3) { throw 'Controller does not track target position.' }
-            if (($controllerRect.Right - $controllerRect.Left) -lt 500 -or ($controllerRect.Bottom - $controllerRect.Top) -lt 80) { throw 'Controller dimensions are too small.' }
-            if (($readoutRect.Right - $readoutRect.Left) -lt 450 -or ($readoutRect.Bottom - $readoutRect.Top) -lt 100) { throw 'Readout panel is clipped or too short to show the translation cards.' }
-
-            $style = [NativeWindowCheck]::GetWindowLongPtr($overlay.MainWindowHandle, -16).ToInt64()
-            if (($style -band 0x00C00000) -eq 0 -or ($style -band 0x00080000) -eq 0) { throw 'Controller lacks a native draggable caption and close system menu.' }
-            $exStyle = [NativeWindowCheck]::GetWindowLongPtr($overlay.MainWindowHandle, -20).ToInt64()
-            if (($exStyle -band 0x08000000) -ne 0 -or ($exStyle -band 0x00000008) -eq 0) { throw 'Controller is not mouse active and always-on-top.' }
-            $readoutExStyle = [NativeWindowCheck]::GetWindowLongPtr($readoutHandles[0], -20).ToInt64()
-            if (($readoutExStyle -band 0x00080000) -eq 0 -or ($readoutExStyle -band 0x00000020) -eq 0) { throw 'Readout is not configured for click-through.' }
-            $probe = [NativeWindowCheck+POINT]::new()
-            $probe.X = $readoutRect.Left + 25; $probe.Y = $readoutRect.Top + 25
-            if ([NativeWindowCheck]::WindowFromPoint($probe) -ne $target.MainWindowHandle) { throw 'Readout blocks mouse input to FS Golf.' }
-
-            $oldX = $targetRect.Left; $oldY = $targetRect.Top
-            if (-not [NativeWindowCheck]::SetWindowPos($target.MainWindowHandle, [IntPtr]::Zero, $oldX + 70, $oldY + 45, 0, 0, 0x0001 -bor 0x0002 -bor 0x0010)) { throw 'Unable to move test target.' }
-            Start-Sleep -Milliseconds 700
-            $controllerRect = [NativeWindowCheck+RECT]::new()
-            $targetRect = [NativeWindowCheck+RECT]::new()
-            if (-not [NativeWindowCheck]::GetWindowRect($overlay.MainWindowHandle, [ref]$controllerRect) -or
-                -not [NativeWindowCheck]::GetWindowRect($target.MainWindowHandle, [ref]$targetRect)) { throw 'Could not read moved window bounds.' }
-            if ([Math]::Abs(($controllerRect.Left - $targetRect.Left) - 18) -gt 4 -or [Math]::Abs(($controllerRect.Top - $targetRect.Top) - 18) -gt 4) { throw 'Controller failed to follow the moved target.' }
-            if (Test-Path -LiteralPath $log) { throw "Unexpected exception log: $(Get-Content -LiteralPath $log -Raw)" }
-            Write-Host 'PASS: active draggable/closable controller, readable-size readout, target tracking, click-through input, no startup exception.'
-          } finally {
-            if ($null -ne $overlay -and -not $overlay.HasExited) { Stop-Process -Id $overlay.Id -Force }
-            if (-not $target.HasExited) { Stop-Process -Id $target.Id -Force }
-          }
-      - name: Testuj komunikat bez działającego FS Golf
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = (Resolve-Path 'dist/WindowsOverlay/FSGolfPL.exe').Path
-          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -Wait -PassThru -WindowStyle Hidden
-          if ($process.ExitCode -ne 0) { throw "Overlay startup smoke test failed: $($process.ExitCode)" }
-      - name: Sprawdź kompletność paczki
-        shell: pwsh
-        run: |
-          $zip = 'FSGolfPL-Windows-Overlay-v4.zip'
-          Compress-Archive -Path 'dist/WindowsOverlay/*' -DestinationPath $zip -CompressionLevel Optimal
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
-          try {
-            $exeEntry = $archive.Entries | Where-Object { $_.FullName -eq 'FSGolfPL.exe' -and $_.Length -gt 1000000 }
-            if (-not $exeEntry) { throw 'ZIP does not contain the fresh Windows executable.' }
-            Write-Host "Verified ZIP contents: $($archive.Entries.Count) entries; EXE $($exeEntry.Length) bytes."
-          } finally { $archive.Dispose() }
-      - name: Utwórz nowy GitHub Release v4
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: windows-overlay-v4
-          target_commitish: main
-          name: FS Golf PL Windows Overlay v4
-          body: Fresh self-contained Windows x64 release. Automated UI checks passed for window sizing, target following, mouse pass-through and active startup.
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          files: FSGolfPL-Windows-Overlay-v4.zip
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: echo "Use build-release-windows-v4-clean.yml for the final v4 package."

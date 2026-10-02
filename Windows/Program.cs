@@ -1,17 +1,22 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 namespace FSGolfPL;
 
 static class Program
 {
+    private const string MutexName = @"Local\FSGolfPL.WindowsOverlay.SingleInstance.v4";
+
     [STAThread]
     static int Main(string[] args)
     {
         var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
         var testTarget = args.Contains("--test-target", StringComparer.OrdinalIgnoreCase);
-        var diagnosticMode = smokeTest || testTarget;
+        var legacyTestWindow = args.Contains("--legacy-test-window", StringComparer.OrdinalIgnoreCase);
+        var diagnosticMode = smokeTest || testTarget || legacyTestWindow;
         Exception? unhandledException = null;
 
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -32,24 +37,39 @@ static class Program
         try
         {
             ApplicationConfiguration.Initialize();
+
+            // Test windows intentionally run beside the actual overlay process.
             if (testTarget)
             {
                 Application.Run(new TestTargetForm());
                 return unhandledException is null ? 0 : 1;
             }
-
-            var form = new OverlayForm();
-            if (smokeTest)
+            if (legacyTestWindow)
             {
-                var smokeCompleted = false;
-                using var timer = new System.Windows.Forms.Timer { Interval = 8000 };
-                timer.Tick += (_, _) => { timer.Stop(); smokeCompleted = true; form.Close(); };
-                form.Shown += (_, _) => timer.Start();
-                Application.Run(form);
-                return smokeCompleted && unhandledException is null && form.LastRefreshError is null ? 0 : 1;
+                Application.Run(new LegacyTestForm());
+                return unhandledException is null ? 0 : 1;
             }
 
-            Application.Run(form);
+            using var instanceMutex = new Mutex(initiallyOwned: true, MutexName, out var firstInstance);
+            if (!firstInstance)
+                return 0;
+
+            LegacyOverlayCleanup.CloseOldOverlayProcesses();
+            var form = new OverlayForm();
+            var context = new ApplicationContext(form);
+            form.FormClosed += (_, _) => context.ExitThread();
+
+            if (smokeTest)
+            {
+                var completed = false;
+                using var timer = new System.Windows.Forms.Timer { Interval = 5000 };
+                timer.Tick += (_, _) => { timer.Stop(); completed = true; form.Close(); };
+                timer.Start();
+                Application.Run(context);
+                return completed && unhandledException is null && form.LastRefreshError is null ? 0 : 1;
+            }
+
+            Application.Run(context);
             return unhandledException is null ? 0 : 1;
         }
         catch (Exception exception)
@@ -76,31 +96,144 @@ internal static class RuntimeDiagnostics
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
             File.AppendAllText(LogFilePath, $"[{DateTimeOffset.Now:O}] {exception}\r\n\r\n");
         }
-        catch { /* Diagnostics must never prevent startup. */ }
+        catch { /* Logging must never prevent startup. */ }
     }
 }
 
-/// <summary>Movable native controller; the separate readout is deliberately click-through.</summary>
+/// <summary>Hides and closes this application's older overlay processes before v4 starts.</summary>
+internal static class LegacyOverlayCleanup
+{
+    private const int SwHide = 0;
+    private const uint WmClose = 0x0010;
+
+    public static void CloseOldOverlayProcesses()
+    {
+        var currentPid = Environment.ProcessId;
+        var legacyWindows = new List<(IntPtr Handle, int ProcessId)>();
+        EnumWindows((handle, _) =>
+        {
+            if (!IsWindowVisible(handle)) return true;
+            var pid = 0u;
+            GetWindowThreadProcessId(handle, out pid);
+            if (pid == 0 || pid == (uint)currentPid) return true;
+
+            var title = GetTitle(handle);
+            if (!IsLegacyOverlayTitle(title)) return true;
+
+            try
+            {
+                using var process = Process.GetProcessById((int)pid);
+                if (!process.ProcessName.Equals("FSGolfPL", StringComparison.OrdinalIgnoreCase)) return true;
+                ShowWindowAsync(handle, SwHide);
+                PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
+                legacyWindows.Add((handle, (int)pid));
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                ShowWindowAsync(handle, SwHide);
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        foreach (var pid in legacyWindows.Select(window => window.ProcessId).Distinct())
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (!process.WaitForExit(900))
+                {
+                    // Old releases have no single-instance guard and may be stuck
+                    // in a polling loop. Their known app window has already been hidden.
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(900);
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                // The old process may have exited between enumeration and cleanup.
+            }
+        }
+    }
+
+    private static bool IsLegacyOverlayTitle(string title)
+    {
+        if (title.Length == 0 || title.Contains("Test Window", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return title.Equals("FS Golf PL", StringComparison.OrdinalIgnoreCase)
+            || title.StartsWith("FS Golf PL Overlay", StringComparison.OrdinalIgnoreCase)
+            || title.StartsWith("FS Golf PL Readouts", StringComparison.OrdinalIgnoreCase)
+            || title.StartsWith("FS Golf PL —", StringComparison.OrdinalIgnoreCase)
+            || title.StartsWith("FSGolfPL", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetTitle(IntPtr handle)
+    {
+        var buffer = new StringBuilder(512);
+        GetWindowText(handle, buffer, buffer.Capacity);
+        return buffer.ToString().Trim();
+    }
+
+    private delegate bool EnumWindowsProc(IntPtr handle, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr handle);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maxCount);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindowAsync(IntPtr handle, int command);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
+}
+
+/// <summary>
+/// One native window only. It stays hidden until the real FS Golf window exists;
+/// Windows keeps it owned by the game window, without placing it in the TopMost band.
+/// </summary>
 public sealed class OverlayForm : Form
 {
     private const int PollIntervalMs = 300;
-    private static readonly IntPtr HwndTopMost = new(-1);
+    private static readonly IntPtr HwndTop = IntPtr.Zero;
+    private static readonly IntPtr GwlpHwndParent = new(-8);
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpShowWindow = 0x0040;
 
-    private readonly Label _status = new()
+    private readonly FlowLayoutPanel _cards = new()
     {
         Dock = DockStyle.Fill,
-        AutoSize = false,
+        AutoScroll = false,
+        WrapContents = true,
+        FlowDirection = FlowDirection.LeftToRight,
+        Padding = new Padding(8),
+        BackColor = Color.FromArgb(25, 35, 48)
+    };
+    private readonly Label _status = new()
+    {
+        Dock = DockStyle.Bottom,
+        Height = 30,
         ForeColor = Color.White,
         BackColor = Color.FromArgb(35, 48, 64),
-        Font = new Font("Segoe UI", 10, FontStyle.Regular),
+        Font = new Font("Segoe UI", 9, FontStyle.Regular),
         TextAlign = ContentAlignment.MiddleLeft,
-        Padding = new Padding(14, 4, 12, 4)
+        Padding = new Padding(12, 0, 8, 0)
     };
-    private readonly TranslationOverlayForm _readout = new();
+    private readonly List<Panel> _tiles = new();
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = PollIntervalMs };
     private FsGolfWindow? _currentTarget;
+    private IntPtr _ownerHandle;
     private Point _targetOffset = new(18, 18);
     private bool _positioning;
     private string? _lastError;
@@ -116,28 +249,63 @@ public sealed class OverlayForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowIcon = false;
-        ShowInTaskbar = true;
+        ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(35, 48, 64);
-        ForeColor = Color.White;
-        Size = new Size(620, 164);
-        MinimumSize = new Size(500, 110);
-        Location = new Point(36, 36);
+        BackColor = Color.FromArgb(25, 35, 48);
+        MinimumSize = new Size(500, 180);
+        ClientSize = new Size(760, 300);
+        Controls.Add(_cards);
         Controls.Add(_status);
-
-        _status.Text = "FS Golf PC 2.0 nie jest uruchomiony\r\nUruchom grę, aby wyświetlić tłumaczenia. Przeciągnij to okno za pasek tytułu.";
-        Shown += (_, _) => RefreshTarget();
-        LocationChanged += (_, _) => HandleManualMove();
+        AddTiles();
         _timer.Tick += (_, _) => RefreshTarget();
-        FormClosed += (_, _) => { _timer.Dispose(); _readout.Dispose(); };
+        FormClosed += (_, _) => _timer.Dispose();
         _timer.Start();
+        // Deliberately do not show a startup/waiting window. The timer reveals
+        // this one form only after the target game window has been found.
     }
 
-    private void HandleManualMove()
+    private void AddTiles()
     {
+        foreach (var parameter in ParameterCatalog.All)
+        {
+            var tile = new Panel
+            {
+                Height = 58,
+                Margin = new Padding(4),
+                BackColor = Color.FromArgb(49, 65, 84),
+                Padding = new Padding(9, 4, 7, 3)
+            };
+            tile.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = parameter.PolishLabel,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = false
+            });
+            tile.Controls.Add(new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 20,
+                Text = parameter.EnglishLabel,
+                ForeColor = Color.FromArgb(196, 210, 224),
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 8, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = false
+            });
+            _tiles.Add(tile);
+            _cards.Controls.Add(tile);
+        }
+    }
+
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
         if (_positioning || _currentTarget is null || _currentTarget.IsMinimized) return;
         _targetOffset = new Point(Left - _currentTarget.Bounds.Left, Top - _currentTarget.Bounds.Top);
-        PositionReadout(_currentTarget);
     }
 
     private void RefreshTarget()
@@ -152,213 +320,130 @@ public sealed class OverlayForm : Form
             _firstRefreshError ??= exception.ToString();
             var signature = $"{exception.GetType().FullName}: {exception.Message}";
             if (_lastError != signature) { RuntimeDiagnostics.Log(exception); _lastError = signature; }
-            _readout.Hide();
-            TopMost = false;
-            Text = "FS Golf PL — błąd";
-            _status.Text = $"Błąd działania overlayu: {exception.Message}\r\nLog: {RuntimeDiagnostics.LogFilePath}";
+            HideAndDetach();
         }
     }
 
     private void RefreshTargetCore()
     {
         var target = FsGolfWindowLocator.FindBestCandidate();
-        if (target is null)
+        if (target is null || target.IsMinimized || !IsWindow(target.Handle))
         {
-            if (_currentTarget is not null)
-            {
-                _currentTarget = null;
-                _targetOffset = new Point(18, 18);
-                _readout.Hide();
-                TopMost = false;
-                _positioning = true;
-                Size = new Size(620, 164);
-                Location = new Point(36, 36);
-                _positioning = false;
-            }
-            Text = "FS Golf PL — Overlay v4";
-            _status.Text = "FS Golf PC 2.0 nie jest uruchomiony\r\nUruchom grę, aby wyświetlić tłumaczenia. Przeciągnij to okno za pasek tytułu.";
+            HideAndDetach();
+            _currentTarget = null;
+            _targetOffset = new Point(18, 18);
             return;
         }
 
-        if (_currentTarget?.Handle != target.Handle) _targetOffset = new Point(18, 18);
+        if (_currentTarget?.Handle != target.Handle)
+            _targetOffset = new Point(18, 18);
         _currentTarget = target;
-        if (target.IsMinimized)
+
+        if (!IsWindowVisible(target.Handle))
         {
-            _readout.Hide();
-            TopMost = false;
-            Text = "FS Golf PL — Overlay v4";
-            _status.Text = "FS Golf PC 2.0 jest zminimalizowany.";
+            HideAndDetach();
             return;
         }
 
-        Text = "FS Golf PL — Overlay v4 — FS Golf PC 2.0 wykryty";
-        _status.Text = "FS GOLF PC 2.0 WYKRYTY\r\nPrzeciągnij pasek tytułu, aby przesunąć panel. Przycisk × zamyka overlay.";
-        PositionReadout(target);
+        if (_ownerHandle != target.Handle)
+            SetOwner(target.Handle);
+
+        PositionForTarget(target);
     }
 
-    private void PositionReadout(FsGolfWindow target)
+    private void PositionForTarget(FsGolfWindow target)
     {
         var bounds = target.Bounds;
-        if (bounds.Width <= 0 || bounds.Height <= 0) return;
+        if (bounds.Width <= 0 || bounds.Height <= 0) { HideAndDetach(); return; }
+
+        var width = Math.Clamp((int)Math.Round(bounds.Width * 0.58), 520, 980);
+        var columns = Math.Clamp((width - 16) / 156, 2, 6);
+        var tileWidth = Math.Max(120, (width - 16 - columns * 8) / columns);
+        foreach (var tile in _tiles) tile.Width = tileWidth;
+
+        var rows = (int)Math.Ceiling(_tiles.Count / (double)columns);
+        var cardsHeight = 16 + rows * 66;
+        ClientSize = new Size(width, cardsHeight + _status.Height);
+        _cards.PerformLayout();
+
+        if (!_tiles.All(tile => _cards.ClientRectangle.Contains(tile.Bounds)))
+            throw new InvalidOperationException("Kafelki tłumaczeń nie mieszczą się w oknie.");
 
         var x = bounds.Left + _targetOffset.X;
         var y = bounds.Top + _targetOffset.Y;
-        var controllerWidth = Math.Clamp(bounds.Width - 24, 500, 760);
+        if (x + Width > bounds.Right) x = Math.Max(bounds.Left, bounds.Right - Width - 12);
+        if (y + Height > bounds.Bottom) y = Math.Max(bounds.Top, bounds.Bottom - Height - 12);
+
         _positioning = true;
-        Size = new Size(controllerWidth, 92);
         Location = new Point(x, y);
         _positioning = false;
+        _status.Text = $"FS Golf PC 2.0  •  {bounds.Width} × {bounds.Height}  •  X zamyka overlay";
+        if (!Visible) Show();
 
-        _readout.PrepareForTarget(bounds.Width, bounds.Height);
-        if (!_readout.HasValidLayout())
-            throw new InvalidOperationException("Panel tłumaczeń ma nieprawidłowy układ lub przycięte kafelki.");
-        if (!_readout.Visible) _readout.Show();
-        _readout.TopMost = true;
-
-        var readoutY = y + Height + 8;
-        if (readoutY + _readout.Height > bounds.Bottom)
-            readoutY = Math.Max(bounds.Top, y - _readout.Height - 8);
-        if (!SetWindowPos(_readout.Handle, HwndTopMost, x, readoutY, _readout.Width, _readout.Height, SwpNoActivate | SwpShowWindow))
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-
-        TopMost = true;
-        if (!SetWindowPos(Handle, HwndTopMost, x, y, Width, Height, SwpNoActivate | SwpShowWindow))
+        if (!SetWindowPos(Handle, target.Handle, x, y, Width, Height, SwpNoActivate | SwpShowWindow))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
+
+    private void HideAndDetach()
+    {
+        if (Visible) Hide();
+        if (_ownerHandle != IntPtr.Zero && IsWindow(Handle))
+            SetWindowLongPtr(Handle, GwlpHwndParent, IntPtr.Zero);
+        _ownerHandle = IntPtr.Zero;
+    }
+
+    private void SetOwner(IntPtr targetHandle)
+    {
+        if (!IsWindow(Handle)) _ = Handle;
+        SetWindowLongPtr(Handle, GwlpHwndParent, targetHandle);
+        _ownerHandle = targetHandle;
+    }
+
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr window, IntPtr index, IntPtr value);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-}
 
-internal sealed class TranslationOverlayForm : Form
-{
-    private const int WsExTransparent = 0x00000020;
-    private const int WsExToolWindow = 0x00000080;
-    private const int WsExLayered = 0x00080000;
-    private const int WsExNoActivate = 0x08000000;
-    private const int CardHeight = 58;
-    private const int CardGap = 8;
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr handle);
 
-    private readonly FlowLayoutPanel _flow = new()
-    {
-        Dock = DockStyle.Fill,
-        AutoScroll = false,
-        WrapContents = true,
-        FlowDirection = FlowDirection.LeftToRight,
-        Padding = new Padding(8),
-        BackColor = Color.FromArgb(25, 35, 48)
-    };
-    private readonly List<Panel> _cards = new();
-
-    public TranslationOverlayForm()
-    {
-        Text = "FS Golf PL Readouts v4";
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(25, 35, 48);
-        Opacity = 0.97;
-        ClientSize = new Size(720, 160);
-        Controls.Add(_flow);
-
-        foreach (var parameter in ParameterCatalog.All)
-        {
-            var card = new Panel
-            {
-                Height = CardHeight,
-                Margin = new Padding(CardGap / 2),
-                BackColor = Color.FromArgb(49, 65, 84),
-                Padding = new Padding(9, 5, 7, 4)
-            };
-            var english = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 21,
-                Text = parameter.EnglishLabel,
-                AutoEllipsis = false,
-                ForeColor = Color.FromArgb(196, 210, 224),
-                BackColor = Color.Transparent,
-                Font = new Font("Segoe UI", 9, FontStyle.Regular),
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            var polish = new Label
-            {
-                Dock = DockStyle.Fill,
-                Text = parameter.PolishLabel,
-                AutoEllipsis = false,
-                ForeColor = Color.White,
-                BackColor = Color.Transparent,
-                Font = new Font("Segoe UI", 10, FontStyle.Bold),
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            card.Controls.Add(polish);
-            card.Controls.Add(english);
-            _cards.Add(card);
-            _flow.Controls.Add(card);
-        }
-    }
-
-    protected override bool ShowWithoutActivation => true;
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var parameters = base.CreateParams;
-            parameters.ExStyle |= WsExToolWindow | WsExNoActivate | WsExLayered | WsExTransparent;
-            return parameters;
-        }
-    }
-
-    public void PrepareForTarget(int targetWidth, int targetHeight)
-    {
-        var width = Math.Clamp(targetWidth - 24, 460, 1800);
-        var columns = Math.Clamp((width - 16) / 156, 2, 5);
-        var innerWidth = width - 16;
-        var cardWidth = Math.Max(120, (innerWidth - columns * CardGap) / columns);
-        foreach (var card in _cards) card.Width = cardWidth;
-
-        Width = width;
-        PerformLayout();
-        _flow.PerformLayout();
-
-        var rows = (int)Math.Ceiling(_cards.Count / (double)columns);
-        Height = 16 + rows * (CardHeight + CardGap);
-        _flow.PerformLayout();
-    }
-
-    public bool HasValidLayout()
-    {
-        if (_cards.Count != ParameterCatalog.All.Count || _cards.Count == 0) return false;
-        var client = _flow.ClientRectangle;
-        for (var i = 0; i < _cards.Count; i++)
-        {
-            var card = _cards[i];
-            if (card.Width < 120 || card.Height != CardHeight || !client.Contains(card.Bounds)) return false;
-            for (var j = i + 1; j < _cards.Count; j++)
-                if (card.Bounds.IntersectsWith(_cards[j].Bounds)) return false;
-        }
-        return true;
-    }
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr handle);
 }
 
 internal sealed class TestTargetForm : Form
 {
     public TestTargetForm()
     {
-        Text = "FS Golf PC 2.0 — Test Window";
+        Text = "FS Golf PC 2.0 [Test Window]";
         FormBorderStyle = FormBorderStyle.Sizable;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(1280, 800);
         BackColor = Color.FromArgb(230, 235, 240);
-        var title = new Label
+        Controls.Add(new Label
         {
             Dock = DockStyle.Top,
             Height = 58,
-            Text = "FS Golf PC 2.0 — okno testowe\r\nPrzykładowe wyniki: Carry 198.4 m  |  Ball Speed 62.1 m/s",
+            Text = "FS Golf PC 2.0 — okno testowe\r\nPrzykładowy wynik: Carry 198.4 m | Ball Speed 62.1 m/s",
             Font = new Font("Segoe UI", 16, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleCenter
-        };
-        Controls.Add(title);
+        });
+    }
+}
+
+internal sealed class LegacyTestForm : Form
+{
+    public LegacyTestForm()
+    {
+        Text = "FS Golf PL";
+        FormBorderStyle = FormBorderStyle.None;
+        BackColor = Color.Black;
+        StartPosition = FormStartPosition.Manual;
+        Location = new Point(0, 0);
+        Size = new Size(700, 42);
     }
 }
