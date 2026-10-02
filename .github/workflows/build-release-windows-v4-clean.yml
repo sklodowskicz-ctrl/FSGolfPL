@@ -1,10 +1,7 @@
 name: Copy existing Windows Overlay v4 package to v5
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-release-windows-v4-clean.yml'
+  workflow_dispatch:
 
 permissions:
   contents: write
